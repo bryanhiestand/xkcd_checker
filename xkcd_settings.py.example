@@ -1,0 +1,23 @@
+# Global Options
+# send_method = 'sendgrid'
+send_method = 'smtp'
+mail_to = 'recipient@example.com'
+mail_from = 'sender@example.com'
+
+# Whether to download the file locally. Required if emailing comic as attachment
+download = True
+
+# Whether to mail comic as attachment in addition to <img src=""> html
+# Requires download = True
+mail_attachment = False
+
+# Sendgrid-specific options
+sendgrid_api_key = 'your_sendgrid_api_key'
+
+
+# SMTP-specific options
+smtp_server = 'smtp.gmail.com'
+smtp_port = '587'
+smtp_ttls = True
+smtp_username = 'sender@example.com'
+smtp_password = 'sup4secur3p4ssw0rd!h3r3'

@@ -1,3 +1,8 @@
+# xkcd_checker specific
+xkcd_settings.py
+xkcd_history.txt
+comics/
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
