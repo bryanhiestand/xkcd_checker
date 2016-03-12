@@ -2,7 +2,8 @@ Emails the latest comic to the recipient specified in settings.
 
 Checks xkcd's latest comic, using the xkcd api at http://xkcd.com/info.0.json
 
-If the latest comic is new, emails the comic to the user and records the comic as seen. Optionally downloads comics to ./comics/
+If the latest comic is new, emails the comic to the user and records the comic
+as seen. Optionally downloads comics to ./comics/
 
 ### Installation Instructions ###
 1. clone this repo
@@ -23,7 +24,6 @@ If the latest comic is new, emails the comic to the user and records the comic a
 ### Limitations ###
 * Emails only the latest comic. Will not catch multiple missed comics since
       last run. (e.g. if last is 1630 and current is 1632, will skip 1631)
-* Will break when xkcd hits 16,300 comics
 * Only accepts one recipient
 * Must have file write access in script's directory
 * Only supports sendgrid and smtp at this time
