@@ -38,11 +38,17 @@ as seen.Optionally downloads comics to ./comics/
 * Maybe use sqlite for fun
 """
 
+import base64
 import datetime
 import logging
 import os
-import requests
 import sys
+
+import requests
+from sendgrid import SendGridAPIClient
+from sendgrid.helpers.mail import (Attachment, Disposition, FileContent,
+                                   FileName, FileType, Mail)
+
 try:
     import xkcd_settings
 except ImportError:
@@ -69,7 +75,7 @@ def check_xkcd():
         r = requests.get(xkcd_api_url)
         xkcd_dict = r.json()
     except requests.exceptions.RequestException as e:
-        logging.critical('xkcd_checker.check_xkcd:Unable to download json')
+        logging.critical('xkcd_checker.check_xkcd:Unable to download json. Error: %s' % e)
         sys.exit(1)
     else:
         logging.debug('xkcd_checker.check_xkcd:Got xkcd json. Contents follow')
@@ -107,10 +113,10 @@ def is_downloaded(xkcd_dict):
     except IOError as e:
         try:
             # workaround for ISSUE1
-            with open(history_file, mode='w') as f:
+            with open(history_file, mode='w'):
                 pass
         except IOError as e:
-            logging.critical('xkcd_checker.is_downloaded:Unable to open or create %s' % history_file)
+            logging.critical('xkcd_checker.is_downloaded:Unable to open or create %s. Error: %s' % history_file, e)
             logging.critical('xkcd_checker.is_downloaded:Ensure current working directory is executable')
             sys.exit(1)
         else:
@@ -140,15 +146,15 @@ def download_latest(xkcd_dict):
     try:
         os.makedirs(comic_dir, exist_ok=True)
     except IOError as e:
-        logging.critical('xkcd_checker.download_latest:Unable to open or create %s' % comic_dir)
+        logging.critical('xkcd_checker.download_latest:Unable to open or create %s. Error: %s' % comic_dir, e)
         sys.exit(1)
 
     # Ensure history file is writable, or script will always re-download image
     try:
-        with open(history_file, "at+") as file:
+        with open(history_file, "at+"):
             pass
     except IOError as e:
-        logging.critical('xkcd_checker.download_latest:%s not writable' % history_file)
+        logging.critical('xkcd_checker.download_latest:%s not writable. Error: %s' % history_file, e)
         sys.exit(1)
 
     # Download the latest image as comic_filename
@@ -158,11 +164,11 @@ def download_latest(xkcd_dict):
             comic_image.raise_for_status()
             comic_file.write(comic_image.content)
             logging.info('Downloaded latest comic %s' % comic_filename)
-    except IOError as e:
-        logging.critical('xkcd_checker.download_latest:Unable to save %s to %s' % (download_file, comic_dir))
-        sys.exit(1)
     except requests.exceptions.RequestException as e:
         logging.critical('xkcd_checker.download_latest:xkcd download failed')
+        sys.exit(1)
+    except IOError as e:
+        logging.critical('xkcd_checker.download_latest:Unable to save %s to %s' % (download_file, comic_dir))
         sys.exit(1)
 
     return comic_filename
@@ -191,40 +197,46 @@ def email_latest(xkcd_dict={}):
 
     if xkcd_settings.send_method == 'sendgrid':
         try:
-            import sendgrid
-        except ImportError:
-            logging.error('Unable to load sendgrid module')
-            logging.error('EXITING:Sendgrid requires sendgrid python module. Try pip3 install sendgrid')
+            sendgrid_api_key = xkcd_settings.sendgrid_api_key
+        except KeyError:
+            logging.critical('sendgrid_api_key not found')
             sys.exit(1)
         else:
+            logging.info('Emailing %s via sendgrid' % xkcd_title)
+
+            client = SendGridAPIClient(sendgrid_api_key)
+
+            message = Mail(
+                from_email=xkcd_settings.mail_from,
+                to_emails=xkcd_settings.mail_to,
+                subject=email_subject,
+                html_content=email_html
+            )
+            
+            if xkcd_settings.mail_attachment:
+                comic_filename = get_local_filename(xkcd_dict)
+                new_comic_path = os.path.join(comic_dir, comic_filename)
+                with open(new_comic_path, 'rb') as attach_file:
+                    data = attach_file.read()
+                    attach_file.close()
+                
+                encoded = base64.b64encode(data).decode()
+
+
+                attachedFile = Attachment(
+                    FileContent(encoded),
+                    FileName(comic_filename),
+                    FileType('image/jpeg'),
+                    Disposition('attachment')
+                )
+                message.attachment = attachedFile
+
             try:
-                sendgrid_api_key = xkcd_settings.sendgrid_api_key
-            except KeyError:
-                logging.critical('sendgrid_api_key not found')
-                sys.exit(1)
-            else:
-                logging.info('Emailing %s via sendgrid' % xkcd_title)
-
-                client = sendgrid.SendGridClient(sendgrid_api_key)
-                message = sendgrid.Mail()
-
-                message.add_to(xkcd_settings.mail_to)
-                message.set_from(xkcd_settings.mail_from)
-                message.set_subject(email_subject)
-                message.set_html(email_html)
-
-                if xkcd_settings.mail_attachment:
-                    comic_filename = get_local_filename(xkcd_dict)
-                    new_comic_path = os.path.join(comic_dir, comic_filename)
-                    with open(new_comic_path, 'rb') as attach_file:
-                        message.add_attachment(comic_filename, attach_file)
-
-                result = client.send(message)
-                # result is a tuple: (200, b'{"message":"success"}')
-                if b'success' in result[1]:
-                    return False
-                else:
-                    return result
+                client.send(message)
+                return False
+            except Exception as e:
+                print(e)
+                return e
 
     elif xkcd_settings.send_method == 'smtp':
         try:
@@ -310,7 +322,7 @@ def update_history(xkcd_dict):
             # Trailing newline for posix compliance
             file.write(comic_number + '\n')
     except IOError as e:
-        logging.critical('xkcd_checker.download_latest:%s became unwritable.' % history_file)
+        logging.critical('xkcd_checker.download_latest:%s became unwritable. Error: %s' % history_file, e)
         sys.exit(1)
 
     return True
