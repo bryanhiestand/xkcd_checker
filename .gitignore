@@ -1,4 +1,5 @@
 # xkcd_checker specific
+.env
 xkcd_settings.py
 xkcd_history.txt
 comics/

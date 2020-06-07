@@ -2,40 +2,11 @@
 """
 Emails the latest comic to the recipient specified in settings.
 
-Checks xkcd's latest comic, using the xkcd api at http://xkcd.com/info.0.json
+Checks xkcd's latest comic, using the xkcd API at http://xkcd.com/info.0.json
 
-If the latest comic is new, emails the comic to the user and records the comic
-as seen.Optionally downloads comics to ./comics/
+Project page: https://github.com/bryanhiestand/xkcd_checker
 
-### Installation Instructions ###
-1. clone this repo
-2. copy xkcd_settings.py.example to xkcd_settings.py
-3. Edit xkcd_settings.py, filling in your send_method (smtp or sendgrid), username, password, or api key
-4. Run from command line: python3 xkcd_checker.py
-5. Script will create xkcd_history.txt and (if downloading) comics/ directory
-6. Repeat run to ensure duplicates not sent
-7. If successful, install as cron job. I recommend hourly
-
-### Dependencies ###
-* python3
-* builtin datetime, logging, os, requests, and sys python3 modules
-* if using sendgrid, sendgrid module installed for python3
-* if using smtp, builtin smtplib, email.mime python3 modules
-* xkcd_settings.py correctly filled out (see xkcd_settings.example)
-
-### Limitations ###
-* Emails only the latest comic. Will not catch multiple missed comics since
-      last run. (e.g. if last is 1630 and current is 1632, will skip 1631)
-* Only accepts one recipient
-* Must have file write access in script's directory
-* Only supports sendgrid and smtp at this time
-
-### TODO ###
-* Support comic backfill (one email for each comic since last run)
-* Use proper config loading instead of xkcd_settings.py import
-* Make email body html prettier
-* Test other email providers
-* Maybe use sqlite for fun
+See README.md for more information.
 """
 
 import base64
@@ -43,30 +14,64 @@ import datetime
 import logging
 import os
 import sys
+from ast import literal_eval
 
+from dotenv import load_dotenv
 import requests
 from sendgrid import SendGridAPIClient
 from sendgrid.helpers.mail import (Attachment, Disposition, FileContent,
                                    FileName, FileType, Mail)
 
-try:
-    import xkcd_settings
-except ImportError:
-    logging.error('Unable to load xkcd_settings.py')
-    logging.error('Please create xkcd_settings.py from xkcd_settings.py.example')
-    sys.exit(1)
-else:
-    pass
-    # TODO implement xkcd_settings.log_level before module imports?
-    # logging.basicConfig(level=xkcd_settings.log_level))
-
-# moved this below settings import and disabled.
-# os.chdir(sys.path[0])
 logging.basicConfig(level=20)
 
 xkcd_api_url = 'http://xkcd.com/info.0.json'
 history_file = 'xkcd_history.txt'
 comic_dir = 'comics'
+
+class Config(object):
+    config_prefix = 'XKCD_'
+
+    def __init__(self):
+        # load env vars from .env
+        load_dotenv()
+
+        self.mail_method = self.get_config_str('MAIL_METHOD')
+        self.mail_to = self.get_config_str('MAIL_TO')
+        self.mail_from = self.get_config_str('MAIL_FROM')
+
+        # Whether to download the file locally. Required if emailing comic as attachment
+        self.download = self.get_config_bool('DOWNLOAD')
+
+        # Whether to mail comic as attachment in addition to <img src=""> html
+        # Requires download = True
+        self.mail_attachment = self.get_config_bool('MAIL_ATTACHMENT')
+
+        # Sendgrid-specific options
+        self.sendgrid_api_key = self.get_config_str('SENDGRID_API_KEY')
+
+        # SMTP-specific options
+        self.smtp_server = self.get_config_str('SMTP_SERVER')
+        self.smtp_port = self.get_config_str('SMTP_PORT', default='587')
+        self.smtp_ttls = self.get_config_bool('SMTP_TTLS')
+        self.smtp_username = self.get_config_str('SMTP_USERNAME')
+        self.smtp_password = self.get_config_str('SMTP_PASSWORD')
+
+        # Perform basic validation of config from .env
+        if self.mail_attachment and not self.download:
+            logging.error('XKCD_DOWNLOAD must be enabled before XKCD_MAIL_ATTACHMENT will work')
+            sys.exit(1)
+
+        if self.mail_method == 'sendgrid' and not self.sendgrid_api_key:
+            logging.error('XKCD_SENDGRID_API_KEY must be set to use sendgrid')
+
+    def get_config_str(self, item, default=None):
+        return os.environ.get(f"{self.config_prefix}{item}", default)
+
+    def get_config_bool(self, item):
+        """Return a boolean from environment variable config item. Defaults to True."""
+        setting = os.environ.get(f"{self.config_prefix}{item}", 'True')
+        setting = setting.title()
+        return literal_eval(setting)
 
 
 def check_xkcd():
@@ -131,14 +136,14 @@ def get_local_filename(xkcd_dict):
     return '%s-%s' % (comic_number, os.path.basename(comic_image_url))
 
 
-def download_latest(xkcd_dict):
+def download_latest(config, xkcd_dict):
     """Download the latest xkcd image, log to history_file."""
     comic_image_url = xkcd_dict['img']
     comic_filename = get_local_filename(xkcd_dict)
     download_file = os.path.join(comic_dir, comic_filename)
 
     # if downloading disabled, get filename, skip downloading
-    if not xkcd_settings.download:
+    if not config.download:
         logging.info('Downloads disabled, skipping...')
         return comic_filename
 
@@ -183,7 +188,7 @@ def get_datetime_str(xkcd_dict):
     return comic_date.strftime("%a %d %b %y")
 
 
-def email_latest(xkcd_dict={}):
+def email_latest(config, xkcd_dict={}):
     """Email the latest comic to a recipient, optionally include comic as attachment."""
     # TODO reduce mccabe complexity
     datetime_str = get_datetime_str(xkcd_dict)
@@ -195,50 +200,50 @@ def email_latest(xkcd_dict={}):
 <img title=\"%s\" alt=\"%s\" style=\"display:block\" src=\"%s\" /></a></h1>
 ''' % (xkcd_dict['img'], xkcd_title, xkcd_title, xkcd_title, xkcd_dict['img'])
 
-    if xkcd_settings.send_method == 'sendgrid':
+    if config.mail_method == 'sendgrid':
         try:
-            sendgrid_api_key = xkcd_settings.sendgrid_api_key
+            sendgrid_api_key = config.sendgrid_api_key
         except KeyError:
             logging.critical('sendgrid_api_key not found')
             sys.exit(1)
-        else:
-            logging.info('Emailing %s via sendgrid' % xkcd_title)
 
-            client = SendGridAPIClient(sendgrid_api_key)
+        logging.info('Emailing %s via sendgrid' % xkcd_title)
 
-            message = Mail(
-                from_email=xkcd_settings.mail_from,
-                to_emails=xkcd_settings.mail_to,
-                subject=email_subject,
-                html_content=email_html
-            )
+        client = SendGridAPIClient(sendgrid_api_key)
+
+        message = Mail(
+            from_email=config.mail_from,
+            to_emails=config.mail_to,
+            subject=email_subject,
+            html_content=email_html
+        )
+        
+        if config.mail_attachment:
+            comic_filename = get_local_filename(xkcd_dict)
+            new_comic_path = os.path.join(comic_dir, comic_filename)
+            with open(new_comic_path, 'rb') as attach_file:
+                data = attach_file.read()
+                attach_file.close()
             
-            if xkcd_settings.mail_attachment:
-                comic_filename = get_local_filename(xkcd_dict)
-                new_comic_path = os.path.join(comic_dir, comic_filename)
-                with open(new_comic_path, 'rb') as attach_file:
-                    data = attach_file.read()
-                    attach_file.close()
-                
-                encoded = base64.b64encode(data).decode()
+            encoded = base64.b64encode(data).decode()
 
 
-                attachedFile = Attachment(
-                    FileContent(encoded),
-                    FileName(comic_filename),
-                    FileType('image/jpeg'),
-                    Disposition('attachment')
-                )
-                message.attachment = attachedFile
+            attachedFile = Attachment(
+                FileContent(encoded),
+                FileName(comic_filename),
+                FileType('image/jpeg'),
+                Disposition('attachment')
+            )
+            message.attachment = attachedFile
 
-            try:
-                client.send(message)
-                return False
-            except Exception as e:
-                print(e)
-                return e
+        try:
+            client.send(message)
+            return False
+        except Exception as e:
+            print(e)
+            return e
 
-    elif xkcd_settings.send_method == 'smtp':
+    elif config.mail_method == 'smtp':
         try:
             from email.mime.multipart import MIMEMultipart
             from email.mime.text import MIMEText
@@ -250,13 +255,13 @@ def email_latest(xkcd_dict={}):
             sys.exit(1)
         else:
             # Get all required external vars
-            server = xkcd_settings.smtp_server
-            port = xkcd_settings.smtp_port
-            username = xkcd_settings.smtp_username
-            password = xkcd_settings.smtp_password
-            ttls = xkcd_settings.smtp_ttls
-            mail_to = xkcd_settings.mail_to
-            mail_from = xkcd_settings.mail_from
+            server = config.smtp_server
+            port = config.smtp_port
+            username = config.smtp_username
+            password = config.smtp_password
+            ttls = config.smtp_ttls
+            mail_to = config.mail_to
+            mail_from = config.mail_from
 
             # Craft MIMEMultipart message
             msg = MIMEMultipart('alternative')
@@ -273,7 +278,7 @@ def email_latest(xkcd_dict={}):
             msg.attach(part1)
             msg.attach(part2)
 
-            if xkcd_settings.mail_attachment:
+            if config.mail_attachment:
                 comic_filename = get_local_filename(xkcd_dict)
                 new_comic_path = os.path.join(comic_dir, comic_filename)
                 with open(new_comic_path, 'rb') as attach_file:
@@ -298,18 +303,7 @@ def email_latest(xkcd_dict={}):
             return smtp_error
 
     else:
-        logging.warning('No valid send_method found in xkcd_settings')
-        sys.exit(1)
-
-
-def check_settings():
-    """Perform basic validation on xkcd_settings.py."""
-    if xkcd_settings.mail_attachment and not xkcd_settings.download:
-        logging.error('mail_attachment option requires download = True')
-        sys.exit(1)
-
-    if xkcd_settings.send_method == 'sendgrid' and not xkcd_settings.sendgrid_api_key:
-        logging.error('sendgrid support requires sendgrid_api_key')
+        logging.warning('No valid mail_method found in config')
         sys.exit(1)
 
 
@@ -330,17 +324,16 @@ def update_history(xkcd_dict):
 
 def main():
     """Run functions sequentially to email and log latest xkcd comic."""
-    check_settings()
+    config = Config()
 
     xkcd_dict = check_xkcd()
-
     if is_downloaded(xkcd_dict):
         return
 
-    download_latest(xkcd_dict)
+    download_latest(config, xkcd_dict)
 
     # all subfunctions return False if message was sent successfully
-    send_error = email_latest(xkcd_dict=xkcd_dict)
+    send_error = email_latest(config, xkcd_dict)
 
     # append to history only if email sent successfully
     if send_error:
