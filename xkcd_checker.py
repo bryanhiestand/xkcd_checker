@@ -56,6 +56,14 @@ class Config(object):
         self.smtp_username = self.get_config_str('SMTP_USERNAME')
         self.smtp_password = self.get_config_str('SMTP_PASSWORD')
 
+        # Perform basic validation of config from .env
+        if self.mail_attachment and not self.download:
+            logging.error('XKCD_DOWNLOAD must be enabled before XKCD_MAIL_ATTACHMENT will work')
+            sys.exit(1)
+
+        if self.mail_method == 'sendgrid' and not self.sendgrid_api_key:
+            logging.error('XKCD_SENDGRID_API_KEY must be set to use sendgrid')
+
     def get_config_str(self, item, default=None):
         return os.environ.get(f"{self.config_prefix}{item}", default)
 
