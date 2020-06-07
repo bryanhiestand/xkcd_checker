@@ -132,7 +132,6 @@ Mailed by <a href="https://github.com/bryanhiestand/xkcd_checker">xkcd_checker</
         from email.mime.image import MIMEImage
         import smtplib
 
-        # FIXME: ttls defined but unused
         ttls = self.config.smtp_ttls
 
         # Craft MIMEMultipart message
@@ -172,7 +171,7 @@ Mailed by <a href="https://github.com/bryanhiestand/xkcd_checker">xkcd_checker</
 
 def check_xkcd():
     """Check xkcd for the latest comic, return dict."""
-    retry_delay_minutes = 1 # fixme: 15
+    retry_delay_minutes = 15
 
     try:
         r = requests.get(xkcd_api_url)
