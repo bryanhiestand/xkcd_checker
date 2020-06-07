@@ -18,13 +18,10 @@ from ast import literal_eval
 
 from dotenv import load_dotenv
 import requests
-from sendgrid import SendGridAPIClient
-from sendgrid.helpers.mail import (Attachment, Disposition, FileContent,
-                                   FileName, FileType, Mail)
 
 logging.basicConfig(level=20)
 
-xkcd_api_url = 'http://xkcd.com/info.0.json'
+xkcd_api_url = 'https://xkcd.com/info.0.json'
 history_file = 'xkcd_history.txt'
 comic_dir = 'comics'
 
@@ -74,45 +71,155 @@ class Config(object):
         return literal_eval(setting)
 
 
+class Emailer(object):
+    def __init__(self, config, comic):
+        self.config = config
+        self.comic = comic
+        self.comic_filename = get_local_filename(comic)
+
+        self.datetime_str = get_datetime_str(comic)
+        self.xkcd_title = comic['safe_title']
+        self.email_subject = f"New xkcd {comic['num']}: {self.xkcd_title} from {self.datetime_str}"
+        self.email_text = f"{self.xkcd_title}: {comic['img']}"
+        self.email_html = f"""
+<html><body>
+<h1>
+<a href="{comic['img']}">{self.xkcd_title}<img title="{self.xkcd_title}" alt="{self.xkcd_title}" style="display:block" src="{comic['img']}" /></a>
+</h1>
+<br>
+<br>
+Mailed by <a href="https://github.com/bryanhiestand/xkcd_checker">xkcd_checker</a>
+</body>
+"""
+
+    def mail_sendgrid(self):
+        from sendgrid import SendGridAPIClient
+        from sendgrid.helpers.mail import (Attachment, Disposition, FileContent,
+                                        FileName, FileType, Mail)
+
+        logging.info(f"Emailing {self.xkcd_title} via sendgrid")
+
+        client = SendGridAPIClient(self.config.sendgrid_api_key)
+
+        message = Mail(
+            from_email=self.config.mail_from,
+            to_emails=self.config.mail_to,
+            subject=self.email_subject,
+            html_content=self.email_html
+        )
+        
+        if self.config.mail_attachment:
+            new_comic_path = os.path.join(comic_dir, self.comic_filename)
+            with open(new_comic_path, 'rb') as attach_file:
+                data = attach_file.read()
+                attach_file.close()
+            
+            encoded = base64.b64encode(data).decode()
+
+            attachedFile = Attachment(
+                FileContent(encoded),
+                FileName(self.comic_filename),
+                FileType('image/jpeg'),
+                Disposition('attachment')
+            )
+            message.attachment = attachedFile
+
+        client.send(message)
+
+    def mail_smtp(self):
+        from email.mime.multipart import MIMEMultipart
+        from email.mime.text import MIMEText
+        from email.mime.image import MIMEImage
+        import smtplib
+
+        # FIXME: ttls defined but unused
+        ttls = self.config.smtp_ttls
+
+        # Craft MIMEMultipart message
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = self.email_subject
+        msg['From'] = self.config.mail_from
+        msg['To'] = self.config.mail_to
+        msg_txt = self.email_text
+        msg_html = self.email_html
+
+        # MIME finagling to allow gmail inline from stackoverflow DataTx
+        # http://stackoverflow.com/questions/882712/sending-html-email-using-python
+        part1 = MIMEText(msg_txt, _subtype='plain')
+        part2 = MIMEText(msg_html, _subtype='html')
+        msg.attach(part1)
+        msg.attach(part2)
+
+        if self.config.mail_attachment:
+            comic_filename = get_local_filename(self.comic)
+            new_comic_path = os.path.join(comic_dir, comic_filename)
+            with open(new_comic_path, 'rb') as attach_file:
+                attachment = MIMEImage(attach_file.read())
+                attachment.add_header('Content-Disposition', 'attachment', filename=comic_filename)
+                msg.attach(attachment)
+
+        logging.info(f'Emailing {self.xkcd_title} via SMTP')
+
+        smtp_object = smtplib.SMTP(self.config.smtp_server, self.config.smtp_port)
+        smtp_object.ehlo()
+        if ttls:
+            smtp_object.starttls()
+        if self.config.smtp_username or self.config.smtp_password:
+            smtp_object.login(self.config.smtp_username, self.config.smtp_password)
+
+        smtp_object.sendmail(self.config.mail_from, self.config.mail_to, msg.as_string())
+
+
 def check_xkcd():
     """Check xkcd for the latest comic, return dict."""
+    retry_delay_minutes = 1 # fixme: 15
+
     try:
         r = requests.get(xkcd_api_url)
-        xkcd_dict = r.json()
+        comic = r.json()
     except requests.exceptions.RequestException as e:
-        logging.critical('xkcd_checker.check_xkcd:Unable to download json. Error: %s' % e)
-        sys.exit(1)
+        logging.critical(f'xkcd_checker.check_xkcd:Unable to download json. Error: {e}')
+        logging.critical(f'sleeping {retry_delay_minutes} minute(s)')
+
+        import time
+        time.sleep(60*retry_delay_minutes)
+        try:
+            r = requests.get(xkcd_api_url)
+            comic = r.json()
+        except requests.exceptions.RequestException as e:
+            logging.critical(f'still unable to download after one retry. quitting. error {e}')
+            sys.exit(1)
     else:
-        logging.debug('xkcd_checker.check_xkcd:Got xkcd json. Contents follow')
+        logging.debug('Got xkcd json. Contents follow')
 
-    for k, v in xkcd_dict.items():
-        logging.debug('xkcd_checker.check_xkcd:Key: %s' % k)
-        logging.debug('xkcd_checker.check_xkcd:Value: %s' % v)
+    for k, v in comic.items():
+        logging.debug(f'Latest XKCD Key: {k}')
+        logging.debug(f'Latest XKCD Value: {v}')
 
-    return xkcd_dict
+    return comic
 
 
-def is_downloaded(xkcd_dict):
+def is_downloaded(comic):
     """Check local datastore to see if latest xkcd is already downloaded."""
     os.chdir(sys.path[0])
 
-    current_xkcd = str(xkcd_dict['num'])
-    logging.debug('is_downloaded:current_xkcd %s' % (current_xkcd))
+    current_xkcd = str(comic['num'])
+    logging.debug(f'is_downloaded:current_xkcd {current_xkcd}')
 
     try:
         # opening with mode a+ causes readlines to fail
         with open(history_file, mode='rt') as f:
-            logging.debug('xkcd_checker.is_downloaded:Opened %s' % history_file)
+            logging.debug(f'xkcd_checker.is_downloaded:Opened {history_file}')
             for line in reversed(f.readlines()):
                 line = line.strip()
-                logging.debug('is_downloaded:line=%s' % (line))
+                logging.debug(f'is_downloaded:line={line}')
                 if line == current_xkcd:
-                    logging.info('xkcd_checker.is_downloaded:xkcd %s already downloaded. Exiting' % current_xkcd)
+                    logging.info(f'xkcd_checker.is_downloaded:xkcd {current_xkcd} already downloaded. Exiting')
                     return True
                 else:
                     pass
             else:
-                logging.info('xkcd_checker.is_downloaded:xkcd %s not found in history' % current_xkcd)
+                logging.info(f'xkcd_checker.is_downloaded:xkcd {current_xkcd} not found in history')
                 return False
 
     except IOError as e:
@@ -121,25 +228,25 @@ def is_downloaded(xkcd_dict):
             with open(history_file, mode='w'):
                 pass
         except IOError as e:
-            logging.critical('xkcd_checker.is_downloaded:Unable to open or create %s. Error: %s' % history_file, e)
+            logging.critical(f'xkcd_checker.is_downloaded:Unable to open or create {history_file}. Error: {e}')
             logging.critical('xkcd_checker.is_downloaded:Ensure current working directory is executable')
             sys.exit(1)
         else:
-            logging.debug('Created %s' % history_file)
+            logging.debug(f'Created {history_file}')
             return False
 
 
-def get_local_filename(xkcd_dict):
+def get_local_filename(comic):
     """Given a dict from the xkcd json, return comic_number-image_name.ext."""
-    comic_number = str(xkcd_dict['num'])
-    comic_image_url = xkcd_dict['img']
-    return '%s-%s' % (comic_number, os.path.basename(comic_image_url))
+    comic_number = str(comic['num'])
+    comic_image_url = comic['img']
+    return f'{comic_number}-{os.path.basename(comic_image_url)}'
 
 
-def download_latest(config, xkcd_dict):
+def download_latest(config, comic):
     """Download the latest xkcd image, log to history_file."""
-    comic_image_url = xkcd_dict['img']
-    comic_filename = get_local_filename(xkcd_dict)
+    comic_image_url = comic['img']
+    comic_filename = get_local_filename(comic)
     download_file = os.path.join(comic_dir, comic_filename)
 
     # if downloading disabled, get filename, skip downloading
@@ -151,7 +258,7 @@ def download_latest(config, xkcd_dict):
     try:
         os.makedirs(comic_dir, exist_ok=True)
     except IOError as e:
-        logging.critical('xkcd_checker.download_latest:Unable to open or create %s. Error: %s' % comic_dir, e)
+        logging.critical(f'xkcd_checker.download_latest:Unable to open or create {comic_dir}. Error: {e}')
         sys.exit(1)
 
     # Ensure history file is writable, or script will always re-download image
@@ -159,7 +266,7 @@ def download_latest(config, xkcd_dict):
         with open(history_file, "at+"):
             pass
     except IOError as e:
-        logging.critical('xkcd_checker.download_latest:%s not writable. Error: %s' % history_file, e)
+        logging.critical(f'xkcd_checker.download_latest:{history_file} not writable. Error: {e}')
         sys.exit(1)
 
     # Download the latest image as comic_filename
@@ -168,155 +275,35 @@ def download_latest(config, xkcd_dict):
             comic_image = requests.get(comic_image_url)
             comic_image.raise_for_status()
             comic_file.write(comic_image.content)
-            logging.info('Downloaded latest comic %s' % comic_filename)
+            logging.info(f'Downloaded latest comic {comic_filename}')
     except requests.exceptions.RequestException as e:
         logging.critical('xkcd_checker.download_latest:xkcd download failed')
         sys.exit(1)
     except IOError as e:
-        logging.critical('xkcd_checker.download_latest:Unable to save %s to %s' % (download_file, comic_dir))
+        logging.critical(f'xkcd_checker.download_latest:Unable to save {download_file} to {comic_dir}')
         sys.exit(1)
 
     return comic_filename
 
 
-def get_datetime_str(xkcd_dict):
+def get_datetime_str(comic):
     """Return a pretty datetime string from latest comic data."""
-    year = int(xkcd_dict['year'])
-    month = int(xkcd_dict['month'])
-    day = int(xkcd_dict['day'])
+    year = int(comic['year'])
+    month = int(comic['month'])
+    day = int(comic['day'])
     comic_date = datetime.date(year, month, day)
     return comic_date.strftime("%a %d %b %y")
 
-
-def email_latest(config, xkcd_dict={}):
-    """Email the latest comic to a recipient, optionally include comic as attachment."""
-    # TODO reduce mccabe complexity
-    datetime_str = get_datetime_str(xkcd_dict)
-    xkcd_title = xkcd_dict['safe_title']
-    email_subject = 'New xkcd %s: %s from %s' % (xkcd_dict['num'], xkcd_title, datetime_str)
-    email_text = '%s: %s' % (xkcd_title, xkcd_dict['img'])
-    email_html = '''<html><body>
-<h1><a href=\"%s\">%s:<br>
-<img title=\"%s\" alt=\"%s\" style=\"display:block\" src=\"%s\" /></a></h1>
-''' % (xkcd_dict['img'], xkcd_title, xkcd_title, xkcd_title, xkcd_dict['img'])
-
-    if config.mail_method == 'sendgrid':
-        try:
-            sendgrid_api_key = config.sendgrid_api_key
-        except KeyError:
-            logging.critical('sendgrid_api_key not found')
-            sys.exit(1)
-
-        logging.info('Emailing %s via sendgrid' % xkcd_title)
-
-        client = SendGridAPIClient(sendgrid_api_key)
-
-        message = Mail(
-            from_email=config.mail_from,
-            to_emails=config.mail_to,
-            subject=email_subject,
-            html_content=email_html
-        )
-        
-        if config.mail_attachment:
-            comic_filename = get_local_filename(xkcd_dict)
-            new_comic_path = os.path.join(comic_dir, comic_filename)
-            with open(new_comic_path, 'rb') as attach_file:
-                data = attach_file.read()
-                attach_file.close()
-            
-            encoded = base64.b64encode(data).decode()
-
-
-            attachedFile = Attachment(
-                FileContent(encoded),
-                FileName(comic_filename),
-                FileType('image/jpeg'),
-                Disposition('attachment')
-            )
-            message.attachment = attachedFile
-
-        try:
-            client.send(message)
-            return False
-        except Exception as e:
-            print(e)
-            return e
-
-    elif config.mail_method == 'smtp':
-        try:
-            from email.mime.multipart import MIMEMultipart
-            from email.mime.text import MIMEText
-            from email.mime.image import MIMEImage
-            import smtplib
-
-        except ImportError:
-            logging.error('Unable to load smtplib or email.mime module. This should not happen')
-            sys.exit(1)
-        else:
-            # Get all required external vars
-            server = config.smtp_server
-            port = config.smtp_port
-            username = config.smtp_username
-            password = config.smtp_password
-            ttls = config.smtp_ttls
-            mail_to = config.mail_to
-            mail_from = config.mail_from
-
-            # Craft MIMEMultipart message
-            msg = MIMEMultipart('alternative')
-            msg['Subject'] = email_subject
-            msg['From'] = mail_from
-            msg['To'] = mail_to
-            msg_txt = email_text
-            msg_html = email_html
-
-            # MIME finagling to allow gmail inline from stackoverflow DataTx
-            # http://stackoverflow.com/questions/882712/sending-html-email-using-python
-            part1 = MIMEText(msg_txt, _subtype='plain')
-            part2 = MIMEText(msg_html, _subtype='html')
-            msg.attach(part1)
-            msg.attach(part2)
-
-            if config.mail_attachment:
-                comic_filename = get_local_filename(xkcd_dict)
-                new_comic_path = os.path.join(comic_dir, comic_filename)
-                with open(new_comic_path, 'rb') as attach_file:
-                    attachment = MIMEImage(attach_file.read())
-                    attachment.add_header('Content-Disposition', 'attachment', filename=comic_filename)
-                    msg.attach(attachment)
-
-            logging.info('Emailing %s via smtp' % xkcd_title)
-
-            # TODO add error handling for all possible smtplib failures
-            smtp_object = smtplib.SMTP(server, port)
-            smtp_object.ehlo()
-            if ttls:
-                smtp_object.starttls()
-            try:
-                smtp_object.login(username, password)
-            except smtplib.SMTPAuthenticationError as e:
-                logging.error('email_latest:SMTPAuthenticationError. Exiting.')
-                sys.exit(1)
-
-            smtp_error = smtp_object.sendmail(mail_from, mail_to, msg.as_string())
-            return smtp_error
-
-    else:
-        logging.warning('No valid mail_method found in config')
-        sys.exit(1)
-
-
-def update_history(xkcd_dict):
-    """Append comic number from xkcd_dict to xkcd_history file."""
-    comic_number = str(xkcd_dict['num'])
+def update_history(comic):
+    """Append comic number from comic to xkcd_history file."""
+    comic_number = str(comic['num'])
 
     try:
         with open(history_file, "at") as file:
             # Trailing newline for posix compliance
             file.write(comic_number + '\n')
     except IOError as e:
-        logging.critical('xkcd_checker.download_latest:%s became unwritable. Error: %s' % history_file, e)
+        logging.critical(f'xkcd_checker.download_latest:{history_file} became unwritable. Error: {e}')
         sys.exit(1)
 
     return True
@@ -326,21 +313,21 @@ def main():
     """Run functions sequentially to email and log latest xkcd comic."""
     config = Config()
 
-    xkcd_dict = check_xkcd()
-    if is_downloaded(xkcd_dict):
+    comic = check_xkcd()
+    if is_downloaded(comic):
         return
 
-    download_latest(config, xkcd_dict)
+    download_latest(config, comic)
 
-    # all subfunctions return False if message was sent successfully
-    send_error = email_latest(config, xkcd_dict)
+    emailer = Emailer(config, comic)
+    if config.mail_method == 'sendgrid':
+        emailer.mail_sendgrid()
 
-    # append to history only if email sent successfully
-    if send_error:
-        logging.error('Failed to send latest comic. Exiting.')
-        sys.exit(1)
-    else:
-        update_history(xkcd_dict)
+    if config.mail_method == 'smtp':
+        emailer.mail_smtp()
+
+    update_history(comic)
+    # TODO: create history object and methods instead
 
 if __name__ == '__main__':
     main()
