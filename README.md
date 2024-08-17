@@ -21,8 +21,7 @@ as seen. Optionally downloads comics to ./comics/
 ## Dependencies ##
 
 * python3
-* MacOS or Linux (not tested on Windows)
-* see contents of requirements.txt
+* MacOS or Ubuntu (tested on 20.04-24.04)
 
 ## Limitations ##
 

@@ -1,9 +1,9 @@
-certifi==2023.11.17
+certifi==2024.7.4
 charset-normalizer==3.3.2
-idna==3.6
-python-dotenv==1.0.0
+idna==3.7
+python-dotenv==1.0.1
 python-http-client==3.3.7
-requests==2.31.0
-sendgrid==6.10.0
+requests==2.32.3
+sendgrid==6.11.0
 starkbank-ecdsa==2.2.0
-urllib3==2.1.0
+urllib3==2.2.2
