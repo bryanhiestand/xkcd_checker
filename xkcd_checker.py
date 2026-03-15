@@ -9,7 +9,6 @@ Project page: https://github.com/bryanhiestand/xkcd_checker
 See README.md for more information.
 """
 
-import base64
 import datetime
 import logging
 import os
@@ -33,7 +32,6 @@ class Config:
         # load env vars from .env
         load_dotenv()
 
-        self.mail_method = self.get_config_str('MAIL_METHOD')
         self.mail_to = self.get_config_str('MAIL_TO')
         self.mail_from = self.get_config_str('MAIL_FROM')
 
@@ -43,9 +41,6 @@ class Config:
         # Whether to mail comic as attachment in addition to <img src=""> html
         # Requires download = True
         self.mail_attachment = self.get_config_bool('MAIL_ATTACHMENT')
-
-        # Sendgrid-specific options
-        self.sendgrid_api_key = self.get_config_str('SENDGRID_API_KEY')
 
         # SMTP-specific options
         self.smtp_server = self.get_config_str('SMTP_SERVER')
@@ -57,10 +52,6 @@ class Config:
         # Perform basic validation of config from .env
         if self.mail_attachment and not self.download:
             logging.error('XKCD_DOWNLOAD must be enabled before XKCD_MAIL_ATTACHMENT will work')
-            sys.exit(1)
-
-        if self.mail_method == 'sendgrid' and not self.sendgrid_api_key:
-            logging.error('XKCD_SENDGRID_API_KEY must be set to use sendgrid')
             sys.exit(1)
 
     def get_config_str(self, item, default=None):
@@ -93,42 +84,6 @@ class Emailer:
 Mailed by <a href="https://github.com/bryanhiestand/xkcd_checker">xkcd_checker</a>
 </body>
 """
-
-    def mail_sendgrid(self):
-        from sendgrid import SendGridAPIClient
-        from sendgrid.helpers.mail import (Attachment, Disposition, FileContent,
-                                        FileName, FileType, Mail)
-
-        logging.info(f"Emailing {self.xkcd_title} via sendgrid")
-
-        client = SendGridAPIClient(self.config.sendgrid_api_key)
-
-        message = Mail(
-            from_email=self.config.mail_from,
-            to_emails=self.config.mail_to,
-            subject=self.email_subject,
-            html_content=self.email_html
-        )
-        
-        if self.config.mail_attachment:
-            new_comic_path = os.path.join(comic_dir, self.comic_filename)
-            with open(new_comic_path, 'rb') as attach_file:
-                data = attach_file.read()
-
-            encoded = base64.b64encode(data).decode()
-
-            attached_file = Attachment(
-                FileContent(encoded),
-                FileName(self.comic_filename),
-                FileType('image/jpeg'),
-                Disposition('attachment')
-            )
-            message.attachment = attached_file
-
-        try:
-            client.send(message)
-        except Exception as e:
-            logging.error(f'sendgrid send failed: {e}')
 
     def mail_smtp(self):
         from email.mime.multipart import MIMEMultipart
@@ -322,11 +277,7 @@ def main():
     download_latest(config, comic)
 
     emailer = Emailer(config, comic)
-    if config.mail_method == 'sendgrid':
-        emailer.mail_sendgrid()
-
-    if config.mail_method == 'smtp':
-        emailer.mail_smtp()
+    emailer.mail_smtp()
 
     update_history(comic)
     # TODO: create history object and methods instead
