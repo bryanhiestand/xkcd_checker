@@ -9,30 +9,29 @@ Project page: https://github.com/bryanhiestand/xkcd_checker
 See README.md for more information.
 """
 
-import base64
 import datetime
 import logging
 import os
 import sys
+import time
 from ast import literal_eval
 
 from dotenv import load_dotenv
 import requests
 
-logging.basicConfig(level=20)
+logging.basicConfig(level=logging.INFO)
 
 xkcd_api_url = 'https://xkcd.com/info.0.json'
 history_file = 'xkcd_history.txt'
 comic_dir = 'comics'
 
-class Config(object):
+class Config:
     config_prefix = 'XKCD_'
 
     def __init__(self):
         # load env vars from .env
         load_dotenv()
 
-        self.mail_method = self.get_config_str('MAIL_METHOD')
         self.mail_to = self.get_config_str('MAIL_TO')
         self.mail_from = self.get_config_str('MAIL_FROM')
 
@@ -42,9 +41,6 @@ class Config(object):
         # Whether to mail comic as attachment in addition to <img src=""> html
         # Requires download = True
         self.mail_attachment = self.get_config_bool('MAIL_ATTACHMENT')
-
-        # Sendgrid-specific options
-        self.sendgrid_api_key = self.get_config_str('SENDGRID_API_KEY')
 
         # SMTP-specific options
         self.smtp_server = self.get_config_str('SMTP_SERVER')
@@ -58,9 +54,6 @@ class Config(object):
             logging.error('XKCD_DOWNLOAD must be enabled before XKCD_MAIL_ATTACHMENT will work')
             sys.exit(1)
 
-        if self.mail_method == 'sendgrid' and not self.sendgrid_api_key:
-            logging.error('XKCD_SENDGRID_API_KEY must be set to use sendgrid')
-
     def get_config_str(self, item, default=None):
         return os.environ.get(f"{self.config_prefix}{item}", default)
 
@@ -71,7 +64,7 @@ class Config(object):
         return literal_eval(setting)
 
 
-class Emailer(object):
+class Emailer:
     def __init__(self, config, comic):
         self.config = config
         self.comic = comic
@@ -91,40 +84,6 @@ class Emailer(object):
 Mailed by <a href="https://github.com/bryanhiestand/xkcd_checker">xkcd_checker</a>
 </body>
 """
-
-    def mail_sendgrid(self):
-        from sendgrid import SendGridAPIClient
-        from sendgrid.helpers.mail import (Attachment, Disposition, FileContent,
-                                        FileName, FileType, Mail)
-
-        logging.info(f"Emailing {self.xkcd_title} via sendgrid")
-
-        client = SendGridAPIClient(self.config.sendgrid_api_key)
-
-        message = Mail(
-            from_email=self.config.mail_from,
-            to_emails=self.config.mail_to,
-            subject=self.email_subject,
-            html_content=self.email_html
-        )
-        
-        if self.config.mail_attachment:
-            new_comic_path = os.path.join(comic_dir, self.comic_filename)
-            with open(new_comic_path, 'rb') as attach_file:
-                data = attach_file.read()
-                attach_file.close()
-            
-            encoded = base64.b64encode(data).decode()
-
-            attachedFile = Attachment(
-                FileContent(encoded),
-                FileName(self.comic_filename),
-                FileType('image/jpeg'),
-                Disposition('attachment')
-            )
-            message.attachment = attachedFile
-
-        client.send(message)
 
     def mail_smtp(self):
         from email.mime.multipart import MIMEMultipart
@@ -159,14 +118,16 @@ Mailed by <a href="https://github.com/bryanhiestand/xkcd_checker">xkcd_checker</
 
         logging.info(f'Emailing {self.xkcd_title} via SMTP')
 
-        smtp_object = smtplib.SMTP(self.config.smtp_server, self.config.smtp_port)
-        smtp_object.ehlo()
-        if ttls:
-            smtp_object.starttls()
-        if self.config.smtp_username or self.config.smtp_password:
-            smtp_object.login(self.config.smtp_username, self.config.smtp_password)
-
-        smtp_object.sendmail(self.config.mail_from, self.config.mail_to, msg.as_string())
+        try:
+            with smtplib.SMTP(self.config.smtp_server, self.config.smtp_port) as smtp_object:
+                smtp_object.ehlo()
+                if ttls:
+                    smtp_object.starttls()
+                if self.config.smtp_username and self.config.smtp_password:
+                    smtp_object.login(self.config.smtp_username, self.config.smtp_password)
+                smtp_object.sendmail(self.config.mail_from, self.config.mail_to, msg.as_string())
+        except smtplib.SMTPException as e:
+            logging.error(f'SMTP send failed: {e}')
 
 
 def check_xkcd():
@@ -180,7 +141,6 @@ def check_xkcd():
         logging.critical(f'xkcd_checker.check_xkcd:Unable to download json. Error: {e}')
         logging.critical(f'sleeping {retry_delay_minutes} minute(s)')
 
-        import time
         time.sleep(60*retry_delay_minutes)
         try:
             r = requests.get(xkcd_api_url)
@@ -215,8 +175,6 @@ def is_downloaded(comic):
                 if line == current_xkcd:
                     logging.info(f'xkcd_checker.is_downloaded:xkcd {current_xkcd} already downloaded. Exiting')
                     return True
-                else:
-                    pass
             else:
                 logging.info(f'xkcd_checker.is_downloaded:xkcd {current_xkcd} not found in history')
                 return False
@@ -319,11 +277,7 @@ def main():
     download_latest(config, comic)
 
     emailer = Emailer(config, comic)
-    if config.mail_method == 'sendgrid':
-        emailer.mail_sendgrid()
-
-    if config.mail_method == 'smtp':
-        emailer.mail_smtp()
+    emailer.mail_smtp()
 
     update_history(comic)
     # TODO: create history object and methods instead

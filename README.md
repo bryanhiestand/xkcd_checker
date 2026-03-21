@@ -11,7 +11,7 @@ as seen. Optionally downloads comics to ./comics/
 
 1. clone this repo
 1. copy example.env to .env
-1. Edit .env with your configuration, filling in your send_method (smtp or sendgrid), username, password, or api key
+1. Edit .env with your configuration, filling in your smtp credentials
 1. (optional) configure a virtualenv for this project: `mkvirtualenv xkcd_checker`
 1. `pip3 install -r requirements.txt`
 1. Run from command line: `python3 xkcd_checker.py`
@@ -29,7 +29,7 @@ as seen. Optionally downloads comics to ./comics/
       last run. (e.g. if last is 1630 and current is 1632, will skip 1631)
 * Only accepts one recipient
 * Must have file write access in script's directory
-* Only supports sendgrid and smtp at this time
+* Only supports smtp at this time
 
 ## TODO ##
 
