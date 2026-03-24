@@ -1,4 +1,12 @@
-# xkcd_checker #
+# xkcd_checker (Archived)
+
+> **This repository is archived and no longer maintained.**
+>
+> Please use the actively maintained Rust rewrite instead:
+>
+> [![ferrous-comics](https://raw.githubusercontent.com/bryanhiestand/ferrous-comics/main/assets/social-preview.svg)](https://github.com/bryanhiestand/ferrous-comics)
+>
+> **[https://github.com/bryanhiestand/ferrous-comics](https://github.com/bryanhiestand/ferrous-comics)**
 
 Emails the latest comic to the recipient specified in settings.
 
